@@ -1,0 +1,26 @@
+CREATE TABLE IF NOT EXISTS users (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+
+  email VARCHAR(255) NOT NULL UNIQUE,
+
+  first_name VARCHAR(100) NOT NULL,
+
+  last_name VARCHAR(100) NOT NULL,
+
+  password_hash VARCHAR(255) NOT NULL,
+
+  is_verified TINYINT(1) NOT NULL DEFAULT 0,
+
+  verification_otp VARCHAR(255) NULL,
+
+  verification_otp_expires BIGINT NULL,
+
+  reset_otp VARCHAR(255) NULL,
+
+  reset_otp_expires BIGINT NULL,
+
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP
+);

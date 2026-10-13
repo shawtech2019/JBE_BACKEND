@@ -1,58 +1,41 @@
-import { ZodError } from "zod";
+const { HttpError } = require("../utils/http-error");
 
-import { ApiError } from "../utils/api-error";
+/**
+ * Central error handler. Mounted last in app.js.
+ */
+function errorMiddleware(error, req, res, next) {
+  if (res.headersSent) return next(error);
 
-export function errorMiddleware(error, req, res, next) {
-  console.error(error);
-
-  /*
-   * ZOD VALIDATION ERROR
-   */
-
-  if (error instanceof ZodError) {
-    res.status(400).json({
-      success: false,
-
-      message: "Validation failed",
-
-      errors: error.flatten(),
-    });
-
-    return;
-  }
-
-  /*
-   * APPLICATION ERROR
-   */
-
-  if (error instanceof ApiError) {
-    res.status(error.statusCode).json({
-      success: false,
+  // Application errors thrown deliberately by services.
+  if (error instanceof HttpError) {
+    return res.status(error.statusCode).json({
+      status: "error",
       message: error.message,
     });
-
-    return;
   }
 
-  /*
-   * MYSQL DUPLICATE ENTRY
-   */
+  // Joi validation errors (defensive — validators usually short-circuit).
+  if (error && error.isJoi) {
+    return res.status(400).json({
+      status: "error",
+      message: error.message,
+    });
+  }
 
-  if (error?.code === "ER_DUP_ENTRY") {
-    res.status(409).json({
-      success: false,
+  // MySQL duplicate entry.
+  if (error && error.code === "ER_DUP_ENTRY") {
+    return res.status(409).json({
+      status: "error",
       message: "A record with the same information already exists",
     });
-
-    return;
   }
 
-  /*
-   * UNKNOWN ERROR
-   */
+  console.error(error);
 
   res.status(500).json({
-    success: false,
+    status: "error",
     message: "Internal server error",
   });
 }
+
+module.exports = errorMiddleware;

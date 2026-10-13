@@ -1,102 +1,223 @@
-const pool = require("../config/db");
 const bcrypt = require("bcrypt");
 
-/* CREATE USER */
-exports.createUser = async (user) => {
-  const hashed = await bcrypt.hash(user.password, 10);
+const User = require("../models/User");
+const Role = require("../models/Role");
 
-  await pool.query(
-    `INSERT INTO users 
-      (name, email, password, verification_otp, verification_otp_expires) 
-     VALUES (?, ?, ?, ?, ?)`,
-    [
-      user.name,
-      user.email,
-      hashed,
-      user.verificationOtp || null,
-      user.verificationOtpExpires || null,
-    ]
-  );
+const { generateOTP } = require("../utils/otp");
+const { signToken } = require("../utils/jwt");
+const { HttpError } = require("../utils/http-error");
+const mailService = require("./mail.service");
+
+const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+const splitName = (name = "") => {
+  const parts = name.trim().split(/\s+/);
+  const firstName = parts.shift() || "";
+  const lastName = parts.join(" ");
+  return { firstName, lastName };
 };
 
-/* FIND USER BY EMAIL */
-exports.findUserByEmail = async (email) => {
-  const [rows] = await pool.query(
-    "SELECT * FROM users WHERE email = ?",
-    [email]
-  );
-  return rows[0];
+const issueOtp = async (user, column) => {
+  const otp = generateOTP();
+  const expires = Date.now() + OTP_TTL_MS;
+  const hashed = await bcrypt.hash(otp, 10);
+
+  if (column === "reset") {
+    await User.setResetOtp(user.id, hashed, expires);
+  } else {
+    await User.setVerificationOtp(user.id, hashed, expires);
+  }
+
+  return otp;
 };
 
-/* VERIFY EMAIL WITH OTP */
+const sendOtpEmail = async ({ to, otp, firstName, purpose = "verification" }) => {
+  try {
+    await mailService.sendOtpEmail({ to, otp, firstName, purpose });
+  } catch (error) {
+    // Email delivery should never break the flow. In development the OTP is
+    // logged (by the mail service) so it can still be used for manual testing.
+    console.error(`[mail] failed to send OTP to ${to}:`, error.message);
+  }
+};
+
+const otpMatches = async (otp, hashed) => {
+  if (!hashed) return false;
+  return bcrypt.compare(otp, hashed);
+};
+
+/* ------------------------------------------------------------------ */
+/* Registration                                                        */
+/* ------------------------------------------------------------------ */
+
+exports.register = async ({ name, email, password }) => {
+  const existing = await User.findByEmail(email);
+
+  if (existing && existing.is_verified) {
+    throw new HttpError(409, "Email is already registered");
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+
+  let user = existing;
+  if (user) {
+    // Re-registering an unverified account: refresh credentials + OTP.
+    await User.updatePassword(user.id, passwordHash);
+  } else {
+    const { firstName, lastName } = splitName(name);
+    const id = await User.create({ firstName, lastName, email, passwordHash });
+    user = await User.findById(id);
+  }
+
+  const otp = await issueOtp(user, "verify");
+  await sendOtpEmail({
+    to: email,
+    otp,
+    firstName: user.first_name,
+    purpose: "verification",
+  });
+
+  return { message: "Registered. Verify with the OTP sent to your email." };
+};
+
 exports.verifyEmailWithOTP = async (email, otp) => {
-  const [rows] = await pool.query(
-    "SELECT verification_otp, verification_otp_expires FROM users WHERE email = ?",
-    [email]
-  );
+  const user = await User.findByEmail(email);
+  if (!user) throw new HttpError(404, "Email not found");
 
-  if (!rows.length) return false;
+  if (user.is_verified) {
+    return { message: "Email already verified" };
+  }
 
-  const user = rows[0];
+  if (!user.verification_otp || !user.verification_otp_expires) {
+    throw new HttpError(400, "No verification code found. Request a new one.");
+  }
 
-  if (!user.verification_otp) return false;
+  if (Date.now() > Number(user.verification_otp_expires)) {
+    throw new HttpError(400, "Verification code has expired");
+  }
 
-  if (Date.now() > user.verification_otp_expires) return false;
+  const matches = await otpMatches(otp, user.verification_otp);
+  if (!matches) throw new HttpError(400, "Invalid verification code");
 
-  if (otp !== user.verification_otp) return false;
-
-  await pool.query(
-    "UPDATE users SET is_verified = 1, verification_otp = NULL, verification_otp_expires = NULL WHERE email = ?",
-    [email]
-  );
-
-  return true;
+  await User.markVerified(user.id);
+  return { message: "Email verified" };
 };
 
-/* SAVE VERIFICATION OTP (resend flow) */
-// FIX: was missing entirely — needed for resendVerification controller
-exports.saveVerificationOTP = async (email, otp, expires) => {
-  const [results] = await pool.query(
-    "UPDATE users SET verification_otp = ?, verification_otp_expires = ? WHERE email = ?",
-    [otp, expires, email]
-  );
-  return results.affectedRows;
+exports.resendVerification = async (email) => {
+  const user = await User.findByEmail(email);
+  if (!user) throw new HttpError(404, "Email not found");
+  if (user.is_verified) throw new HttpError(400, "Email is already verified");
+
+  const otp = await issueOtp(user, "verify");
+  await sendOtpEmail({
+    to: email,
+    otp,
+    firstName: user.first_name,
+    purpose: "verification",
+  });
+
+  return { message: "New verification code sent" };
 };
 
-/* SAVE RESET OTP */
-exports.saveOTP = async (email, otp, expires) => {
-  const hashedOtp = await bcrypt.hash(otp, 10);
+/* ------------------------------------------------------------------ */
+/* Login                                                               */
+/* ------------------------------------------------------------------ */
 
-  const [results] = await pool.query(
-    "UPDATE users SET reset_otp = ?, reset_otp_expires = ? WHERE email = ?",
-    [hashedOtp, expires, email]
-  );
+exports.login = async (email, password) => {
+  const user = await User.findByEmail(email);
+  if (!user) throw new HttpError(401, "Invalid credentials");
 
-  return results.affectedRows;
+  if (!user.is_verified) {
+    throw new HttpError(403, "Please verify your email before logging in");
+  }
+
+  const match = await bcrypt.compare(password, user.password_hash);
+  if (!match) throw new HttpError(401, "Invalid credentials");
+
+  const roles = await Role.forUser(user.id);
+
+  // A user gets a token even without a role so the client can send them
+  // through the "select a role" step. `requiresRoleSelection` tells them to.
+  const token = signToken({ id: user.id, email: user.email });
+
+  return {
+    status: "success",
+    token,
+    user: User.toPublic(user),
+    roles,
+    requiresRoleSelection: roles.length === 0,
+  };
 };
 
-/* VERIFY OTP AND RESET PASSWORD */
+/* ------------------------------------------------------------------ */
+/* Role selection (onboarding)                                         */
+/* ------------------------------------------------------------------ */
+
+exports.selectRole = async (userId, slug) => {
+  const role = await Role.findBySlug(slug);
+  if (!role) throw new HttpError(404, "Role not found");
+
+  const current = await Role.forUser(userId);
+  if (current.length > 0) {
+    throw new HttpError(409, "A role has already been selected for this account");
+  }
+
+  await Role.assignToUser(userId, role.id);
+  return Role.forUser(userId);
+};
+
+/* ------------------------------------------------------------------ */
+/* Profile                                                             */
+/* ------------------------------------------------------------------ */
+
+exports.getProfile = async (userId) => {
+  const user = await User.findById(userId);
+  if (!user) throw new HttpError(404, "User not found");
+
+  const roles = await Role.forUser(userId);
+  return { user: User.toPublic(user), roles };
+};
+
+/* ------------------------------------------------------------------ */
+/* Password reset                                                      */
+/* ------------------------------------------------------------------ */
+
+exports.sendResetOTP = async (email) => {
+  const user = await User.findByEmail(email);
+  if (!user) throw new HttpError(404, "Email not found");
+
+  const otp = await issueOtp(user, "reset");
+  await sendOtpEmail({
+    to: email,
+    otp,
+    firstName: user.first_name,
+    purpose: "reset",
+  });
+
+  return { message: "OTP has been sent to your email" };
+};
+
 exports.verifyOTPAndReset = async (email, otp, password) => {
-  const [rows] = await pool.query(
-    "SELECT reset_otp, reset_otp_expires FROM users WHERE email = ?",
-    [email]
-  );
+  const user = await User.findByEmail(email);
+  if (!user) throw new HttpError(404, "Email not found");
 
-  if (!rows.length) return false;
+  if (!user.reset_otp || !user.reset_otp_expires) {
+    throw new HttpError(400, "No reset code found. Request a new one.");
+  }
 
-  const user = rows[0];
+  if (Date.now() > Number(user.reset_otp_expires)) {
+    throw new HttpError(400, "Reset code has expired");
+  }
 
-  if (Date.now() > user.reset_otp_expires) return false;
+  const matches = await otpMatches(otp, user.reset_otp);
+  if (!matches) throw new HttpError(400, "Invalid or expired OTP");
 
-  const match = await bcrypt.compare(otp, user.reset_otp);
-  if (!match) return false;
+  const passwordHash = await bcrypt.hash(password, 10);
+  await User.updatePassword(user.id, passwordHash);
 
-  const hashed = await bcrypt.hash(password, 10);
-
-  await pool.query(
-    "UPDATE users SET password = ?, reset_otp = NULL, reset_otp_expires = NULL WHERE email = ?",
-    [hashed, email]
-  );
-
-  return true;
+  return { message: "Password reset successful" };
 };

@@ -1,0 +1,32 @@
+CREATE TABLE IF NOT EXISTS leases (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+
+  tenant_id BIGINT UNSIGNED NOT NULL,
+
+  apartment VARCHAR(100) NOT NULL,
+
+  unit VARCHAR(100) NOT NULL,
+
+  monthly_rent DECIMAL(12,2) NOT NULL,
+
+  lease_start_date DATE NOT NULL,
+
+  lease_end_date DATE NOT NULL,
+
+  status ENUM('PENDING','ACTIVE','EXPIRED','TERMINATED') NOT NULL DEFAULT 'PENDING',
+
+  auto_pay_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
+
+  CONSTRAINT fk_lease_user
+    FOREIGN KEY (tenant_id)
+    REFERENCES users(id)
+    ON DELETE RESTRICT
+    ON UPDATE CASCADE,
+
+  INDEX idx_leases_tenant_status (tenant_id, status)
+);
