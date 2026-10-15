@@ -31,6 +31,17 @@ exports.login = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+exports.verifyLoginOtp = asyncHandler(async (req, res) => {
+  const { email, otp } = req.body;
+  const result = await authService.verifyLoginOtp(email, otp);
+  res.json(result);
+});
+
+exports.resendLoginOtp = asyncHandler(async (req, res) => {
+  const result = await authService.resendLoginOtp(req.body.email);
+  res.json({ status: "success", ...result });
+});
+
 exports.me = asyncHandler(async (req, res) => {
   const data = await authService.getProfile(req.user.id);
   res.json({ status: "success", ...data });

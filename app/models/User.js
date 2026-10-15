@@ -1,6 +1,38 @@
 const db = require("../config/db");
 
 /**
+ * Notification channels/categories a user can toggle. Anything not present
+ * in the stored JSON falls back to these defaults.
+ */
+const DEFAULT_NOTIFICATION_PREFERENCES = {
+  email: true,
+  sms: true,
+  maintenance: true,
+  payments: true,
+  announcements: true,
+  lease: true,
+  visitors: true,
+  // Landlord/investor notification categories.
+  newRent: true,
+  paymentDue: true,
+  overdueRent: true,
+};
+
+/** MySQL may hand a JSON column back as a string; normalise it either way. */
+const parseNotificationPreferences = (raw) => {
+  let value = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      value = null;
+    }
+  }
+  if (!value || typeof value !== "object") value = {};
+  return { ...DEFAULT_NOTIFICATION_PREFERENCES, ...value };
+};
+
+/**
  * Central users table.
  *
  * A user has NO role at registration time. Roles are attached after the
@@ -98,6 +130,32 @@ class User {
     );
   }
 
+  /** Store the hashed OTP issued during a two-factor login. */
+  static async setLoginOtp(id, otp, expires) {
+    await db.execute(
+      `UPDATE users
+       SET login_otp = ?, login_otp_expires = ?
+       WHERE id = ?`,
+      [otp, expires, id]
+    );
+  }
+
+  static async clearLoginOtp(id) {
+    await db.execute(
+      `UPDATE users
+       SET login_otp = NULL, login_otp_expires = NULL
+       WHERE id = ?`,
+      [id]
+    );
+  }
+
+  static async setTwoFactorEnabled(id, enabled) {
+    await db.execute("UPDATE users SET two_factor_enabled = ? WHERE id = ?", [
+      enabled ? 1 : 0,
+      id,
+    ]);
+  }
+
   static async updatePassword(id, passwordHash) {
     await db.execute(
       `UPDATE users
@@ -105,6 +163,61 @@ class User {
        WHERE id = ?`,
       [passwordHash, id]
     );
+  }
+
+  /** Update any subset of the editable profile fields. */
+  static async updateProfile(id, fields) {
+    const columns = {
+      first_name: fields.firstName,
+      last_name: fields.lastName,
+      phone: fields.phone,
+      job_title: fields.jobTitle,
+      company: fields.company,
+      location: fields.location,
+    };
+
+    const sets = [];
+    const values = [];
+
+    for (const [column, value] of Object.entries(columns)) {
+      if (value !== undefined) {
+        sets.push(`${column} = ?`);
+        values.push(value);
+      }
+    }
+
+    if (!sets.length) return;
+
+    values.push(id);
+    await db.execute(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`, values);
+  }
+
+  static async updateAvatar(id, avatarUrl) {
+    await db.execute("UPDATE users SET avatar_url = ? WHERE id = ?", [
+      avatarUrl,
+      id,
+    ]);
+  }
+
+  /**
+   * Merge the provided notification preferences with whatever is stored.
+   * Returns the full, merged preference object.
+   */
+  static async updateNotificationPreferences(id, prefs) {
+    const user = await User.findById(id);
+    const current = parseNotificationPreferences(user?.notification_preferences);
+    const merged = { ...current, ...prefs };
+
+    await db.execute(
+      "UPDATE users SET notification_preferences = ? WHERE id = ?",
+      [JSON.stringify(merged), id]
+    );
+
+    return merged;
+  }
+
+  static getDefaultNotificationPreferences() {
+    return { ...DEFAULT_NOTIFICATION_PREFERENCES };
   }
 
   /** Strip sensitive columns before returning a user to the client. */
@@ -116,6 +229,8 @@ class User {
       verification_otp_expires,
       reset_otp,
       reset_otp_expires,
+      login_otp,
+      login_otp_expires,
       ...safe
     } = user;
     return {
@@ -123,8 +238,17 @@ class User {
       email: safe.email,
       firstName: safe.first_name,
       lastName: safe.last_name,
-      fullName: `${safe.first_name} ${safe.last_name}`.trim(),
+      fullName: `${safe.first_name ?? ""} ${safe.last_name ?? ""}`.trim(),
+      phone: safe.phone ?? null,
+      jobTitle: safe.job_title ?? null,
+      company: safe.company ?? null,
+      location: safe.location ?? null,
+      avatarUrl: safe.avatar_url ?? null,
+      notificationPreferences: parseNotificationPreferences(
+        safe.notification_preferences
+      ),
       isVerified: Boolean(safe.is_verified),
+      twoFactorEnabled: Boolean(safe.two_factor_enabled),
       createdAt: safe.created_at,
       updatedAt: safe.updated_at,
     };

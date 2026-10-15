@@ -28,6 +28,8 @@ const issueOtp = async (user, column) => {
 
   if (column === "reset") {
     await User.setResetOtp(user.id, hashed, expires);
+  } else if (column === "login") {
+    await User.setLoginOtp(user.id, hashed, expires);
   } else {
     await User.setVerificationOtp(user.id, hashed, expires);
   }
@@ -127,17 +129,8 @@ exports.resendVerification = async (email) => {
 /* Login                                                               */
 /* ------------------------------------------------------------------ */
 
-exports.login = async (email, password) => {
-  const user = await User.findByEmail(email);
-  if (!user) throw new HttpError(401, "Invalid credentials");
-
-  if (!user.is_verified) {
-    throw new HttpError(403, "Please verify your email before logging in");
-  }
-
-  const match = await bcrypt.compare(password, user.password_hash);
-  if (!match) throw new HttpError(401, "Invalid credentials");
-
+/** Build the successful-login payload (token + user + roles). */
+const buildLoginResult = async (user) => {
   const roles = await Role.forUser(user.id);
 
   // A user gets a token even without a role so the client can send them
@@ -151,6 +144,85 @@ exports.login = async (email, password) => {
     roles,
     requiresRoleSelection: roles.length === 0,
   };
+};
+
+exports.login = async (email, password) => {
+  const user = await User.findByEmail(email);
+  if (!user) throw new HttpError(401, "Invalid credentials");
+
+  if (!user.is_verified) {
+    throw new HttpError(403, "Please verify your email before logging in");
+  }
+
+  const match = await bcrypt.compare(password, user.password_hash);
+  if (!match) throw new HttpError(401, "Invalid credentials");
+
+  // Second factor: hold the session and email a one-time code instead of
+  // handing back a token. The client finishes the login via verifyLoginOtp.
+  if (user.two_factor_enabled) {
+    const otp = await issueOtp(user, "login");
+    await sendOtpEmail({
+      to: email,
+      otp,
+      firstName: user.first_name,
+      purpose: "login",
+    });
+
+    return {
+      status: "success",
+      requires2FA: true,
+      email: user.email,
+      message: "A login verification code has been sent to your email",
+    };
+  }
+
+  return buildLoginResult(user);
+};
+
+/**
+ * Complete a two-factor login with the emailed code, returning a real session.
+ */
+exports.verifyLoginOtp = async (email, otp) => {
+  const user = await User.findByEmail(email);
+  if (!user) throw new HttpError(404, "Email not found");
+
+  if (!user.two_factor_enabled) {
+    throw new HttpError(400, "Two-factor authentication is not enabled");
+  }
+
+  if (!user.login_otp || !user.login_otp_expires) {
+    throw new HttpError(400, "No login code found. Please sign in again.");
+  }
+
+  if (Date.now() > Number(user.login_otp_expires)) {
+    throw new HttpError(400, "Login code has expired. Please sign in again.");
+  }
+
+  const matches = await otpMatches(otp, user.login_otp);
+  if (!matches) throw new HttpError(400, "Invalid login code");
+
+  await User.clearLoginOtp(user.id);
+
+  return buildLoginResult(user);
+};
+
+exports.resendLoginOtp = async (email) => {
+  const user = await User.findByEmail(email);
+  if (!user) throw new HttpError(404, "Email not found");
+
+  if (!user.two_factor_enabled) {
+    throw new HttpError(400, "Two-factor authentication is not enabled");
+  }
+
+  const otp = await issueOtp(user, "login");
+  await sendOtpEmail({
+    to: email,
+    otp,
+    firstName: user.first_name,
+    purpose: "login",
+  });
+
+  return { message: "A new login code has been sent to your email" };
 };
 
 /* ------------------------------------------------------------------ */

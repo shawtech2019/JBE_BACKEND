@@ -20,16 +20,16 @@ CREATE TABLE IF NOT EXISTS roles (
 -- ---------------------------------------------------------
 -- SYSTEM ROLES
 -- `is_system = 1`     -> cannot be deleted by admins.
--- `is_selectable = 1` -> offered on the signup role screen.
--- Admins can add more roles at runtime; new roles are
--- selectable and non-system by default.
+-- `is_selectable = 1` -> offered on the public signup role screen.
+-- Only Tenant and Investor are self-selectable; every other
+-- role is internal and assigned by an administrator.
 -- ---------------------------------------------------------
 INSERT INTO roles (slug, name, description, is_system, is_selectable) VALUES
   ('tenant',                 'Tenant / Resident',        'Pay rent, submit requests & receive announcements',           1, 1),
   ('investor',               'Investor',                'Track investments, returns & financial reports',              1, 1),
-  ('facilities_maintenance', 'Facilities & Maintenance','Manage maintenance & other tasks',                            1, 1),
-  ('vendor',                 'Vendors',                 'View assignments, jobs & update maintenance work status',     1, 1),
-  ('sales_marketing',        'Sales & Marketing',       'Manage listings, leads & sales with rental codes',            1, 1),
+  ('facilities_maintenance', 'Facilities & Maintenance','Manage maintenance & other tasks',                            1, 0),
+  ('vendor',                 'Vendors',                 'View assignments, jobs & update maintenance work status',     1, 0),
+  ('sales_marketing',        'Sales & Marketing',       'Manage listings, leads & sales with rental codes',            1, 0),
   ('admin',                  'Administrator',           'Full platform access: users, roles, properties and settings', 1, 0)
 ON DUPLICATE KEY UPDATE
   name = VALUES(name),

@@ -169,8 +169,27 @@ const sendMail = async ({ to, subject, template = "otp", data = {} }) => {
 };
 
 /**
- * Send the one-time passcode used for email verification and password reset.
+ * Send the one-time passcode used for email verification, password reset and
+ * two-factor login.
  */
+const OTP_COPY = {
+  reset: {
+    subject: "password reset code",
+    intro: "reset your password",
+    ignore: "request a password reset",
+  },
+  login: {
+    subject: "login code",
+    intro: "finish signing in to your account",
+    ignore: "sign in",
+  },
+  verification: {
+    subject: "verification code",
+    intro: "verify your email address",
+    ignore: "create an account",
+  },
+};
+
 const sendOtpEmail = async ({
   to,
   firstName,
@@ -178,29 +197,22 @@ const sendOtpEmail = async ({
   purpose = "verification",
   expiresInMinutes = 10,
 }) => {
-  const isReset = purpose === "reset";
   const appName = APP_NAME;
+  const copy = OTP_COPY[purpose] || OTP_COPY.verification;
+  const subject = `${appName} ${copy.subject}`;
 
   return sendMail({
     to,
-    subject: isReset
-      ? `${appName} password reset code`
-      : `${appName} verification code`,
+    subject,
     template: "otp",
     data: {
       otp,
       firstName,
       expiresInMinutes,
-      subject: isReset
-        ? `${appName} password reset code`
-        : `${appName} verification code`,
+      subject,
       previewText: `Your ${appName} code is ${otp}`,
-      intro: `Use the code below to ${
-        isReset ? "reset your password" : "verify your email address"
-      }.`,
-      ignoreText: isReset
-        ? "request a password reset"
-        : "create an account",
+      intro: `Use the code below to ${copy.intro}.`,
+      ignoreText: copy.ignore,
       text: `Your ${appName} code is ${otp}. It expires in ${expiresInMinutes} minutes.`,
     },
   });

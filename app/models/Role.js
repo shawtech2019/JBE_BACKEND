@@ -43,7 +43,9 @@ class Role {
     name,
     description = null,
     isSystem = 0,
-    isSelectable = 1,
+    // Internal by default: a role only appears on the public signup screen
+    // when an admin explicitly marks it selectable.
+    isSelectable = 0,
   }) {
     const [result] = await db.execute(
       `INSERT INTO roles (slug, name, description, is_system, is_selectable)

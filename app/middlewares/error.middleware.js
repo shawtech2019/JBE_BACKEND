@@ -14,6 +14,15 @@ function errorMiddleware(error, req, res, next) {
     });
   }
 
+  // Multer upload errors (file too large, wrong field, etc.).
+  if (error && error.name === "MulterError") {
+    const message =
+      error.code === "LIMIT_FILE_SIZE"
+        ? "Image is too large (max 2MB)"
+        : error.message;
+    return res.status(400).json({ status: "error", message });
+  }
+
   // Joi validation errors (defensive — validators usually short-circuit).
   if (error && error.isJoi) {
     return res.status(400).json({
